@@ -1,0 +1,59 @@
+Description of processing pipeline
+
+
+## 1. Save data set description ##
+
+Run 
+	python3 ./scripts/save_dataset_description.py DATAPATH_TO_SWC SAVE_PATH
+
+	with e.g DATAPATH_TO_SWC = "./data/swc" and SAVE_PATH = "./data/dataset_description.csv"
+
+## 2. Convert SWC into NeuronTrees ##
+
+First make sure that the global constants in create_neuron_trees.py are set to your paths 
+(e.g. PATH_TO_DATASET_DESCRIPTION = "./data/dataset_description.csv", SAVE_FOLDER = "./data/nt/")
+
+Run 
+	python3 create_neuron_trees.py 
+
+Note, this script uses the multiprocessing tool.
+
+## 3. Get extend of data for normalization of the density maps ##
+
+Adjust the file paths in get_extend_of_data.py before running it (in line 4, line 18 and line 52). 
+Make sure to name the resulting file cell_extend.csv or change it in the create_density_map.py accordingly.
+
+Run 
+	python3 get_extend_of_data.py
+
+
+## 4. Create density maps ##
+
+One can create density maps one by one, or pass all file names to the script via a pipe:
+
+	find . -name '*.swc' -print0 | xargs -0 python3 ./scripts/create_density_map.py -proj xz -part full
+	
+-proj [x,y,z,xy,xz,yz]
+-part [full, axon, dendrite]
+
+Note, this will take a while.
+
+
+## 5. Create morphometric vector ##
+
+First make sure that the file paths are set accordingly (e.g. DATASET_DESCRIPTION = "./data/dataset_description.csv", INPUT_FOLDER = "./data/nt/", 
+line 99: save_path = "./data/morphometrics/%s/" % args.part)
+
+Run 
+	python3 create_morphometric_vectors.py -part full
+
+-part [full, axon, dendrite]
+
+
+Note, this script uses the multiprocessing tool and this will take a while.
+
+
+Now you are set to use the Jupyter Notebooks. Your data folder should contain the folders morphometrics, density_maps, nt and the files dataset_description.csv and cell_extend.csv
+
+
+
