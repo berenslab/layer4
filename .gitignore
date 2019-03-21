@@ -1,0 +1,7 @@
+# ignore the .ipython files
+
+*.ipynb*
+
+
+# ignore .pyc files
+*.pyc
