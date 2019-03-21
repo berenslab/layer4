@@ -171,13 +171,19 @@ def load_data(path, restriction=None, fl='density_map'):
                            'stems', 'tips', 'total_length', 'width']].values
 
         elif fl == 'ephys':
-            d = pd.read_csv(path + 'L4_Neurolucida_log_trafo_AI_Latency.csv')
+            d = pd.read_csv(path + 'patch-morph-ephys-features.csv')
             file_names = d['name sample']
             types = d['Cell type']
-            data = d.values[:, 1:-1]
+            data = d.values[:, 1:-1].astype(float)
+            #log transform AI/100 
+            ind_ai = d.columns[1:-1] == 'AI (%)'
+            data[:,ind_ai] = np.log(data[:,ind_ai]/100)
+
+            # log transform Latency
+            ind_latency = d.columns[1:-1] == 'Latency (ms)'
+            data[:,ind_latency] = np.log(data[:,ind_latency])
 
         return pd.DataFrame(dict(file=file_names, type=types)), np.array(data)
-
 
 def get_persistence_image(data, dim=2, t=1, bins=100, xmax=None, ymax=None):
     if not data.empty:
