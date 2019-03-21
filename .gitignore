@@ -1,6 +1,6 @@
 # ignore the .ipython files
 
-*.ipynb*
+*.ipynb_checkpoints*
 
 
 # ignore .pyc files
