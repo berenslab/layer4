@@ -1,6 +1,8 @@
 import numpy as np
 import time
 import warnings
+import seaborn as sns
+import pylab as plt
 
 import glmnet_python
 from glmnet import glmnet
