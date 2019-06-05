@@ -52,7 +52,7 @@ def elastic_rrr(X, Y, rank=2, lambdau=1, alpha=0.5, max_iter = 100):
 def relaxed_elastic_rrr(X, Y, rank=2, lambdau=1, alpha=0.5, max_iter = 100):
     w,v = elastic_rrr(X, Y, rank=rank, lambdau=lambdau, alpha=alpha)
     w[w[:,0]!=0,:],v = elastic_rrr(X[:,w[:,0]!=0], Y, rank=rank, 
-                                   lambdau=lambdau, alpha=alpha)
+                                   lambdau=lambdau, alpha=0)
     return (w,v)
 
 
