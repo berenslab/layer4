@@ -9,8 +9,8 @@ from utils_ import get_standardized_swc
 from multiprocessing import Pool
 
 
-PATH_TO_DATASET_DESCRIPTION = "/mnt/remote_home/Projects/V1 Layer 4/data/dataset_description.csv"
-SAVE_FOLDER = "/mnt/remote_home/Projects/V1 Layer 4/data/nt/"
+PATH_TO_DATASET_DESCRIPTION = "/mnt/remote_home/Projects/publications/layer4/data/dataset_description.csv"
+SAVE_FOLDER = "/mnt/remote_home/Projects/publications/layer4/data/nt/"
 
 
 def create_neuron_tree(input_file):
@@ -24,11 +24,11 @@ def create_neuron_tree(input_file):
 
     # switch y and z since y corresponds to cortical depth
     swc = swc.rename(columns={'y': 'z', 'z': 'y'})
-    # rotate x,y coordinates into their frame of maximal extend  and soma center for standardization
-    rotated_swc = get_standardized_swc(swc)
+    # reduce soma to one point and soma center for standardization
+    standardized_swc = get_standardized_swc(swc)
 
-    N = nt.NeuronTree(swc=rotated_swc)
-
+    N = nt.NeuronTree(swc=standardized_swc)
+    N = N.smooth_neurites(dim=1, window_size=21)
     N.write_to_swc(file_name=cell_type + "_" + file_name[:-4], ext="",
                    path=SAVE_FOLDER)
 

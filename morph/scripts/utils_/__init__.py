@@ -10,7 +10,7 @@ from scipy.ndimage.filters import gaussian_filter
 from scipy.stats import norm, gaussian_kde
 
 
-def get_standardized_swc(swc, scaling=1., soma_radius=None, pca_rot=True):
+def get_standardized_swc(swc, scaling=1., soma_radius=None, pca_rot=False):
     """
 
     :param swc:
