@@ -254,3 +254,113 @@ def get_pca_transformed_data(X_trn, X_tst, pca, fm_lengths):
     if len(X_train.shape) > 2:
         X_train.squeeze(), X_test.squeeze()
     return X_train, X_test
+
+
+def unit_vector(vector):
+    """ Returns the unit vector of the vector.
+
+    Parameter
+    --------
+    vector : numpy.array
+        d-dimensional vector
+
+    Returns
+    -------
+    u : numpy.array
+        d-dimensional unit vector of 'vector'
+
+    """
+    if np.linalg.norm(vector) > 0:
+        return vector / np.linalg.norm(vector)
+    else:
+        return vector
+
+
+def angle_between(v1, v2):
+    """ Returns the angle in radians between vectors 'v1' and 'v2'::
+
+            >>> angle_between((1, 0, 0), (0, 1, 0))
+            1.5707963267948966
+            >>> angle_between((1, 0, 0), (1, 0, 0))
+            0.0
+            >>> angle_between((1, 0, 0), (-1, 0, 0))
+            3.141592653589793
+    Parameters
+    ----------
+    v1 : numpy.array
+        d-dimensional vector
+    v2 : numpy.array
+        d-dimensional vector
+
+    Returns
+    -------
+    theta : float
+        angle btw v1 and v2 in radians
+
+    """
+    v1_u = unit_vector(v1)
+    v2_u = unit_vector(v2)
+    return np.arctan2(np.linalg.norm(np.cross(v1_u, v2_u)), np.dot(v1_u, v2_u))
+
+
+def get_axis(v1, v2):
+    """ Returns the axis between two vectors v1 and v2
+
+    Parameters
+    ---------
+    v1: numpy.array
+        d-dimensional
+    v2: numpy.array
+        d-dimensional
+
+    Returns
+    -------
+    axis: numpy.array
+        d-dimensional axis btw v1 and v2
+    """
+    return (np.cross(v1, v2)) / (np.linalg.norm(np.cross(v1, v2)))
+
+
+def get_A(x):
+    """
+    Returns matrix A. Used for rotation matrix calculation
+    :param x: 3D numpy.array
+            rotation axis
+
+    :return:
+        A: 3x3 numpy.array
+    """
+
+    if np.isnan(x).any():
+        A = np.zeros((3, 3))
+    else:
+        A = np.array([[0, -x[2], x[1]],
+                  [x[2], 0, -x[0]],
+                  [-x[1], x[0], 0]])
+
+    return A
+
+
+def get_rotation_matrix(a, b):
+    """
+    Returns the rotation matrix to rotate vector a onto vector b.
+
+    :param a: numpy.array (2 or 3 dimensional)
+    :param b: numpy.array (2 or 3 dimensional)
+    :return: R (2x2 or 3x3) rotation matrix to rotate a onto b
+
+    """
+
+    n = np.max(a.shape)
+    R = np.eye(n)
+    a_ = unit_vector(a)
+    b_ = unit_vector(b)
+    if not np.allclose(np.abs(a_), np.abs(b_)):
+        x = get_axis(a_, b_)
+        theta = angle_between(a_,b_)
+        if n == 3:
+            A = get_A(x)
+            R += np.sin(theta) * A + (1 - np.cos(theta)) * np.linalg.matrix_power(A, 2)
+        if n == 2:
+            R = [[np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]]
+    return np.array(R)

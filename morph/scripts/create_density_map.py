@@ -8,7 +8,7 @@ from utils import NeuroFileLoader as loader
 from utils import NeuronTree as nt
 from utils_ import smooth_gaussian
 
-DATASET_DESCRIPTION = "/mnt/remote_home/Projects/V1 Layer 4/data/dataset_description.csv"
+DATASET_DESCRIPTION = "./data/dataset_description.csv"
 FAULTY_CELLS = []#["HEC_2017 03 05 slice 3 cell 7.swc"]
 
 
@@ -54,7 +54,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # get range of coordinates to normalize
-    extend = pd.read_csv("/mnt/remote_home/Projects/V1 Layer 4/data/cell_extend.csv",
+    extend = pd.read_csv("./data/cell_extend.csv",
                          engine='python').rename(columns={"Unnamed: 0": "coord"})
     r = dict(min=np.zeros((3,)), max=np.zeros((3,)))
     r['min'][0] = extend[extend["coord"] == args.part + "_width"]["min"]
@@ -67,7 +67,7 @@ if __name__ == "__main__":
     for file_path in args.filepath:
         # load Neuron Tree
         file_name = file_path.split("/")[-1]
-        save_path = "/mnt/remote_home/Projects/V1 Layer 4/data/density_maps/aligned_globally/%s/%s/" % (args.part,
+        save_path = "./data/density_maps/aligned_globally/%s/%s/" % (args.part,
                                                                                                         args.proj)
         if file_name not in FAULTY_CELLS or not os.path.exists(save_path + "%s.txt" % file_name[:-4]):
             print('Calculating density map for %s \n part: %s ' % (file_path, args.part))

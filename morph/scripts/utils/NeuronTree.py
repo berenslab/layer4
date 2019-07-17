@@ -2,7 +2,7 @@ import copy
 from os import makedirs
 from os.path import exists
 import sys
-sys.setrecursionlimit(10000)
+sys.setrecursionlimit(100000)
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -20,7 +20,7 @@ from shapely.geometry import MultiLineString, LineString, Point
 from itertools import combinations
 from mpl_toolkits.mplot3d import Axes3D
 from sklearn.decomposition import PCA, FastICA
-from .utils import angle_between
+from utils_ import angle_between, get_rotation_matrix
 
 
 matplotlib.rcParams.update({'font.size': 14})
@@ -51,6 +51,22 @@ class NeuronTree:
     # scaling denotes the conversion factor needed to convert the units given in swc file to microns
     # soma_rad denotes the radius of the soma given in microns
     def __init__(self, swc=None, scaling=1., soma_rad=1., node_data=[], edge_data=[], graph=None, post_process=True):
+        """
+        Creates a NeuronTree object that contains a networkx.DiGraph with node attributes 'pos' [x,y,z],
+        'type' [1:soma,2:axon,3: dendrite], 'radius' and edge attributes 'euclidean_dist' and 'path_length'.
+        It can be created from an swc file (as pandas.DataFrame or as numpy,ndarray) from a list of nodes and
+        edges or from a given networkx.DiGraph.
+        :param swc: pandas.DataFrame or numpy.ndarray containing the data of an swc file.
+        :param scaling: Scaling of the coordinates in swc file to microns. Sometimes the coordinates are given in voxels
+        or other units.
+        :param soma_rad: radius of the soma in microns.
+        :param node_data: list of nodes with node id and dictionary of node attributes
+        :param edge_data: list of edges with dicionary of edge attributes
+        :param graph: networkx.DiGraph. It is assumed that the graph contains the required labels.
+        :param post_process: boolean. Determines whether the Neuron is post-processed or not. If set to True the soma
+        points are merged into one single point, the branch types are unified and short branches that originate from the
+        soma and are labelled as axon will get removed.
+        """
         # initialize tree DIRECTED
         if graph:
             G = graph
@@ -63,11 +79,11 @@ class NeuronTree:
                 if type(swc) == pd.DataFrame:
 
                     # sort out node data
-                    n = swc['n'].values
+                    n = swc['n'].values # get node ids
                     pos = np.array([swc['x'].values, swc['y'].values, swc['z'].values]).T / scaling
                     radius = swc['radius'].values / scaling
                     t = swc['type'].values
-                    # if the radius is too big it belongs to the soma
+                    # fixing routine: if the radius is too big it belongs to the soma
                     if soma_rad:
                         t[swc['radius'] / scaling > soma_rad] = 1.
                     pid = swc['parent'].values
@@ -86,15 +102,18 @@ class NeuronTree:
 
                 # create node data
                 t[pid == -1] = 1
+                # create a list of nodes of the form [(node_id, {'pos': [x,y,z], 'type': t, 'radius' : r}),...]
                 node_data = list(zip(n,
                                      [dict(zip(node_keys, [pos[ix], t[ix], radius[ix]])) for ix in range(pos.shape[0])]))
 
                 # create edge data
                 n_ = n.tolist()
                 parent_idx = [n_.index(pid[ix]) for ix in range(1,len(pid))]
+                # calculate euclidean distance between end points of edge
                 ec = np.sqrt(np.sum((pos[parent_idx] - pos[1:]) ** 2, axis=1))
                 edge_keys = ['euclidean_dist', 'path_length']
 
+                # create a list of edges of the form [(e1,e2, {'euclidean_dist': ec, 'path_length': pl}), ..]
                 edge_data = list(zip(pid[1:], n[1:],
                                      [dict(zip(edge_keys, [ec[ix], ec[ix]])) for ix in range(ec.shape[0])]))
 
@@ -106,13 +125,18 @@ class NeuronTree:
         if G.nodes():
 
             self._remove_redundant_nodes()
-            self._make_tree()
+            self._make_tree()   # needed to access the functions predecessor and successor
             if 'type' in self.get_node_attributes() and post_process:
                 self._merge_roots_by_type()
                 self._unify_type()
                 self._clean_axon()
 
     def _merge_roots_by_type(self):
+        """
+        Starts at the root node in the soma and successively merges all nodes labeled as soma (type=1) into one node.
+        This results in a neuron with one single soma node. The manipulation is done inplace.
+
+        """
 
         R = self._G
         nodes_to_merge = True
@@ -135,9 +159,10 @@ class NeuronTree:
 
     def _remove_redundant_nodes(self):
         """
-        remove nodes that are at the same position
-        :return: None
+        Remove redundant nodes from the NeuronTree. A node is considered redundant if the edge between two nodes has a
+        euclidean distance = 0, so the node has the same 3D position as its predecessor.
         """
+        # get the nodes whose edge between them has distance = 0.
         nodeindices = np.array(list(nx.get_edge_attributes(self._G, 'euclidean_dist').values())) == 0
         edgelist = list(np.array(list(nx.get_edge_attributes(self._G, 'euclidean_dist').keys()))[nodeindices])
         while edgelist:
@@ -146,17 +171,22 @@ class NeuronTree:
             n1 = self._G.node[predecessor]
             successors = self._G.successors(redundantNode)
 
+            # connect edges across redundant nodes
             for succ in successors:
                 n2 = self._G.node[succ]
                 d = np.sqrt(np.sum((n1['pos'] - n2['pos']) ** 2))
                 self._G.add_edge(predecessor, succ, euclidean_dist=d, path_length=d)
 
-            # remove node from graph
+            # remove redundant node from graph
             self._G.remove_node(redundantNode)
             nodeindices = np.array(list(nx.get_edge_attributes(self._G, 'euclidean_dist').values())) == 0
             edgelist = list(np.array(list(nx.get_edge_attributes(self._G, 'euclidean_dist').keys()))[nodeindices])
 
     def _merge_roots_by_distance(self, dist):
+        """
+        Merge nodes into one single soma node that are 'dist' microns far away from the soma. Merging is done inplace.
+        :param dist: double, distance in microns.
+        """
 
         R = self._G
         nodes_to_remove = True
@@ -179,73 +209,15 @@ class NeuronTree:
 
         self._G = R
 
-    # merges split single paths into one only based on the out degree of the nodes. E.g.: A-->B-->C-->D becomes A-->D
-    def _merge_edges_on_path_by_degree(self):
-
-        Tree = self._G
-
-        O = Tree.out_degree()
-        d = [i == 1 for i in list(O.values())]
-        I = np.array(list(O.keys()))
-        if d:
-            L = list(I[np.array(d)])  # contains all node ids with out degree 1
-            try:
-                L.remove(1)
-            except ValueError:
-                pass
-        else:
-            raise ValueError('d is empty, check the swc file!')
-        D = copy.copy(L)
-
-        while L:
-
-            c = L.pop()
-            p = Tree.predecessors(c)[0]
-            s = Tree.successors(c)[0]
-
-            path = Tree[c][s]['path_length'] + Tree[p][c]['path_length']
-            while p in L:
-                L.remove(p)
-                c = p
-                p = Tree.predecessors(c)[0]
-                path += Tree[p][c]['path_length']
-
-            # create edge
-            pre = Tree.node[p]
-            suc = Tree.node[s]
-            d = np.sqrt(np.sum((pre['pos'] - suc['pos']) ** 2))
-            Tree.add_edge(p, s, euclidean_dist=d, path_length=path)
-
-        Tree.remove_nodes_from(D)
-        self._G = Tree
-
-    def _merge_edges_on_path_by_degree_recursive(self, start=1):
-
-        def recursive_merging(Tree, current_node, start):
-            deg = Tree.out_degree()[current_node]
-            if deg == 1:
-                succ = Tree.successors(current_node)[0]
-
-                recursive_merging(Tree, succ, start)
-                if start != current_node:
-                    Tree.remove_node(current_node)
-            else:
-                if start != current_node and (start, current_node) not in Tree.edges():
-                    path = nx.shortest_path_length(Tree, start, current_node, weight='path_length')
-                    n1 = Tree.node[start]
-                    n2 = Tree.node[current_node]
-                    d = np.sqrt(np.sum((n1['pos'] - n2['pos']) ** 2))
-                    Tree.add_edge(start, current_node, euclidean_dist=d, path_length=path)
-
-                for succ in Tree.successors(current_node):
-                    recursive_merging(Tree, succ, current_node)
-
-        recursive_merging(self._G, start, start)
-
-    # merges split single paths into one based on the out degree of the nodes and the distance
-    # of the next node (C) to the projected line of the previous and the current node (AB)
-    # E.g.: A-->B-->C becomes A-->C if C is within distance 'dist' of the line connecting A and B
     def _merge_edges_on_path_by_displacement(self, start=1, disp=5):
+        """
+        Reduces the number of nodes along all neurites based on their displacement from the line connecting the outer
+        branch points. It deletes all nodes B on path A-->B-->C that are maximally 'disp' microns displaced from the
+        edge A-->C. The reduction is done inplace, to preserve the original structure please copy the NeuronTree before.
+        :param start: node id, default = 1. Denotes the starting point within the NeuronTree.
+        :param disp: double, displacement threshold in microns. It determines the perpendicular distance within which
+        all nodes get deleted.
+        """
 
         Tree = self._G
         current_node = start
@@ -278,7 +250,13 @@ class NeuronTree:
         self._G = Tree
 
     def _merge_edges_on_path_by_edge_length(self, start=1, e=0.01):
-
+        """
+         It removes nodes B on path A-->B-->C that do not change the length of a direct edge A-->C by the amount of
+         epsilon 'e' (in microns). The reduction is done inplace, to preserve the original structure please
+         copy the NeuronTree before.
+        :param start: node id, default = 1. Denotes the starting point within the NeuronTree.
+        :param e: double, tolerated epsilon (given in microns) of path length that we do not care to remove.
+        """
         Tree = self._G
         current_node = start
         successors = list(Tree.successors(start))
@@ -314,20 +292,31 @@ class NeuronTree:
         self._G = Tree
 
     def _get_branch_type(self, B):
+        """
+        get the type of a branch based on majority vote.
+        :param B: subgraph, a branch within the NeuronTree
+        :return: int, type id (1: soma, 2: axon, 3: basal dendrite, 4: apical dendrite). Type of the branch 'B'.
+        """
         Y = nx.get_node_attributes(self._G, 'type')
         bt = []
         bt += [Y[k] for k in B]
         return np.round(np.mean(bt))
 
     def _unify_type(self):
-
-        for s in self._G.successors(1):
+        """
+        Fixing routine: Set all branches originating from the soma to their majority vote type.
+        """
+        for s in self._G.successors(self.get_root()):
             S = nx.dfs_tree(self._G, s).nodes()
             t = self._get_branch_type(S)
             for k in S:
                 self._G.node[k]['type'] = t
 
     def _clean_axon(self):
+        """
+        Fixing routine: Only keep one axon originating from the soma. If there is multiple present only the longest
+        neurite is kept ( in terms of number of edges) the other ones get deleted. The manipulation happens inplace.
+        """
         # clean up axon: only longest axon is kept
         axon_edges = self.get_axon_edges()
 
@@ -346,16 +335,10 @@ class NeuronTree:
             for e in to_remove:
                 self._G.remove_nodes_from(nx.dfs_tree(self._G, e[1]).nodes())
 
-    def _clean_dendrites(self):
-
-        # clean up dendrites: only keep dendrites that are longer than one node
-        den_n = [k for k in self._G.successors(1) if self._G.node[int(k)]['type'] == 3]
-
-        for n in den_n:
-            if not (self._G.successors(n)):
-                self._G.remove_node(n)
-
     def make_pos_relative(self):
+        """
+        Deprecated! Makes all node positions relative to the soma. The soma will then have position (0,0,0).
+        """
         root = self.get_root()
         if 'pos' in self.get_node_attributes():
             root_pos = self._G.node[root]['pos']
@@ -367,6 +350,10 @@ class NeuronTree:
             raise Warning('There is no position data assigned to the nodes.')
 
     def _make_tree(self):
+        """
+        Forces the networkx.DiGraph to be a tree. This routine was needed because the networkx.dfs_tree() function
+        looses the original node and edge attributes. Manipulation done inplace.
+        """
 
         G = self._G
         r = self.get_root()
@@ -389,9 +376,9 @@ class NeuronTree:
         """
         Returns the minimal spanning tree of the Neuron.
         :return:
-            NeuronTree: mst
+            NeuronTree: mst. The minimal spanning tree representation of the original neuron.
         """
-        # get the included nodes
+        # get the included nodes, which are soma, branch points and tips
         other_points = np.unique(np.append(self.get_branchpoints(), self.get_root()))
         tips = self.get_tips()
 
@@ -405,7 +392,7 @@ class NeuronTree:
         edge_data_new = []
         while nodes:
             current_node = nodes.pop()
-            # node is soma
+            # if node is  not soma
             if current_node != self.get_root():
                 cn = copy.copy(current_node)
                 pred = nx.DiGraph.predecessors(self.get_graph(), current_node)[0]
@@ -422,6 +409,62 @@ class NeuronTree:
                 nodes.add(pred)  # adds the predecessor only once since nodes is a set
 
         return NeuronTree(node_data=node_data_new, edge_data=edge_data_new)
+
+    def smooth_neurites(self, dim=1, window_size=21):
+
+        from scipy.signal import savgol_filter
+
+        G = copy.copy(self.get_graph())
+
+        positions = nx.get_node_attributes(G, 'pos')
+
+        smoothed = dict(zip(G.nodes(), [False] * len(G.nodes())))
+        smoothed[1] = True
+
+        dist_ = nx.single_source_dijkstra_path_length(G, source=1, weight='path_length')
+        tips = self.get_tips()
+
+        # get tips sorted by path length in descending order
+        to_visit = tips[np.argsort([dist_[t] for t in tips])[::-1]]
+
+        # smoothing
+        for c in to_visit:
+            predecessors = [c]
+            for p in predecessors:
+                # add all unsmoothed predecessors
+                add = [p_ for p_ in G.predecessors(p) if not smoothed[p_]]
+                predecessors += add
+
+            path = [positions[p] for p in predecessors]
+            if len(path) > window_size:
+                data = np.array(path)
+                datahat = savgol_filter(data[:, dim], window_size, 3, mode='nearest').reshape(-1,1)
+
+                if dim == 0:
+                    datahat = np.hstack([datahat.reshape(-1, 1), data[:, [1,2]]])
+                elif dim == 1:
+                    datahat = np.hstack([data[:, 0].reshape(-1, 1),
+                                         datahat.reshape(-1, 1),
+                                         data[:, 2].reshape(-1, 1)])
+                elif dim == 2:
+                    datahat = np.hstack([data[:, [0,1]],datahat.reshape(-1, 1)])
+                    
+                positions.update(dict(zip(predecessors, datahat)))
+
+            smoothed.update(dict(zip(predecessors, [True] * len(predecessors))))
+
+        # Create a new tree
+        e_attr = []
+        for e in G.edges():
+            d = np.sqrt(np.sum((positions[e[0]] - positions[e[1]]) ** 2))
+            e_attr.append(d)
+
+        nx.set_node_attributes(G, 'pos', positions)
+        nx.set_edge_attributes(G, 'euclidean_dist', dict(zip(G.edges(), e_attr)))
+        nx.set_edge_attributes(G, 'path_length', dict(zip(G.edges(), e_attr)))
+
+        S = NeuronTree(node_data=G.nodes(data=True), edge_data=G.edges(data=True), post_process=False)
+        return S
 
     def get_node_attributes(self):
         """ returns the list of attributes assigned to each node.
@@ -450,6 +493,10 @@ class NeuronTree:
         return attr
 
     def get_root(self):
+        """
+        Returns the root of the Neuron which is typically the soma with node id = 1.
+        :return: int, node id of the soma.
+        """
         try:
             root = np.min(self.nodes(type_ix=1))
         except (ValueError, KeyError):
@@ -479,7 +526,8 @@ class NeuronTree:
             self._make_tree()
 
         if method == 'mst':
-            self._merge_edges_on_path_by_degree()
+            mst = self.get_mst()
+            self._G = mst.get_graph()
         elif method == 'dist':
             self._merge_edges_on_path_by_edge_length(e=e)
         elif method == 'disp':
@@ -519,14 +567,32 @@ class NeuronTree:
         return T
 
     def nodes(self, type_ix=None, data=False):
+        """
+        Wrapper function to the networkx.nodes() function. It returns a list of all nodes.
+        :param type_ix: int, optional, default = None. Determines the type of nodes to be returned.
+        Options are None (= all nodes), 2 (= axonal nodes) and 3 (= dendritic nodes).
+        :param data: boolean, default=False. If set to True the node attribute data is returned as well.
+        :return: list of nodes
+        """
 
         if type_ix is None:
             nodes = self._G.nodes(data=data)
         else:
-            nodes = [k for k in self._G.node if self._G.node[k]['type'] == type_ix]
+            if type(type_ix) == list:
+                nodes = [k for k in self._G.node if self._G.node[k]['type'] in type_ix]
+            else:
+                nodes = [k for k in self._G.node if self._G.node[k]['type'] == type_ix]
         return nodes
 
     def edges(self, start=None, type_ix=None, data=False):
+        """
+        Wrapper function to the networkx.edges() function. It returns a list of edges.
+        :param start: int, node id, determines the starting edge within the neuron
+        :param type_ix: int, optional, default = None. Determines the type of edges to be returned.
+        Options are None (= all edges), 2 (= axonal edges) and 3 (= dendritic edges).
+        :param data: boolean, default=False. If set to True the edge attribute data is returned as well.
+        :return: list of edges
+        """
         if type_ix is None:
             edges = self._G.edges(start, data=data)
         else:
@@ -535,9 +601,19 @@ class NeuronTree:
         return edges
 
     def get_dendrite_nodes(self, data=False):
-        return np.array(self.nodes(type_ix=3,data=data))
+        """
+        Returns all dendritic nodes.
+        :param data: boolean, default=False. If set to True the node attribute data is returned as well.
+        :return: list of dendritic nodes
+        """
+        return np.array(self.nodes(type_ix=[3, 4] , data=data))
 
     def get_axon_nodes(self, data=False):
+        """
+        Returns all axonal nodes.
+        :param data: boolean, default=False. If set to True the node attribute data is returned as well.
+        :return: list of axonal nodes
+        """
         return np.array(self.nodes(type_ix=2, data=data))
 
     def get_axon_edges(self, start=None, data=False):
@@ -549,71 +625,65 @@ class NeuronTree:
         return [x for x in self._G.edges(start,data=data) if (x[0] in dendrite_nodes or x[1] in dendrite_nodes)]
 
     def get_tips(self):
+        """
+        Returns a list of tips, so the ending nodes within the neuron.
+        :return: list of node ids of tips.
+        """
         E = self._G.edge
         return np.array([e for e in E if E[e] == {}])
 
     def get_branchpoints(self):
+        """
+        Returns a list of branch point ids of the neuron.
+        :return: list of node ids of all branch points (nodes that have more than one successor).
+        """
         bp_indx = np.where(np.array(np.sum(nx.adjacency_matrix(self._G), axis=1)).flatten() > 1)
         return np.array(self.nodes())[bp_indx]
 
     def get_dendritic_tree(self):
+        """
+        Returns the dendrites as a new NeuronTree.
+        :return: NeuronTree
+        """
         nodes = list(self.get_dendrite_nodes())
         nodes.insert(0, self.get_root())
         subgraph = nx.subgraph(self._G, nodes)
         return NeuronTree(graph=subgraph)
 
     def get_axonal_tree(self):
+        """
+        Returns the axon as a new NeuronTree
+        :return: NeuronTree
+        """
         nodes = list(self.get_axon_nodes())
         nodes.insert(0, self.get_root())
         subgraph = nx.subgraph(self._G, nodes)
         return NeuronTree(graph=subgraph)
 
-    # returns the adjacency matrix of the Tree saved in self._G. weight can be None, 'euclidean_dist' or 'path_length'
     def get_adjacency_matrix(self, weight=None):
+        """
+        Returns the adjacency matrix of the Tree saved in self._G. weight can be None, 'euclidean_dist' or 'path_length'
+        :param weight: edge attribute that is considered for the adjacency matrix A. Default = None, then A only
+        contains the structural connectivity between nodes. If set to 'euclidean_dist' or 'path_length' the adjacency
+        matrix is weighted accordingly.
+        :return: sparse array
+        """
         return nx.adjancency_matrix(self._G, weight=weight)
 
     def get_extend(self):
+        """
+        Returns the maximal extend in x, y and z direction.
+        :return: 1x3 numpy.array
+        """
         P = np.array(list(nx.get_node_attributes(self._G, 'pos').values()))
         return np.max(P, axis=0) - np.min(P, axis=0)
 
-    def get_root_angle_dist(self, angle_type='axis_angle', **kwargs):
-        """
-               Returns the histogram over the root angle distribution over a tree. Root angle denotes the orientation of
-               each edge with respect to the root.
-               :param self: NeuronTree object
-               :param bins: int
-                    Number of bins used in the histogram. Default is 10.
-               :param angle_type: either 'axis_angle' or 'euler'
-                    Defines the type of angle that is calculated. Euler angles are defined as angles around the canonical
-                    euler axes (x, y and z). Axis angles are defined with respect to the rotation axis between two
-                    vectors.
-               :returns:
-                    hist: histogram over angles
-                    edges: edges of histogram. For further information see numpy.histogramdd()
-           """
-        from utils.utils import angle_between, get_rotation_matrix, rotationMatrixToEulerAngles
-
-        angles = []
-        if angle_type == 'axis_angle':
-            dim = 1
-            func = lambda u,v: angle_between(u, v)
-        elif angle_type == 'euler':
-            dim =3
-            func = lambda u,v: rotationMatrixToEulerAngles(get_rotation_matrix(u, v))
-        else:
-            raise NotImplementedError('Angle type %s is not implemented' % angle_type)
-
-        for n1, n2 in self._G.edges():
-            u = self._G.node[n2]['pos'] - self._G.node[n1]['pos']
-            v = self._G.node[n1]['pos'] - self._G.node[self.get_root()]['pos']
-            angles.append(func(u, v))
-        angles = np.array(angles)
-        hist = np.histogramdd(angles, range=[[0, np.pi]]*dim, **kwargs)
-        return hist
+  
 
     def get_branch_order(self):
         """
-        Returns the dictionary of the branch order of each node.
+        Returns the dictionary of the branch order of each node. The branch order denotes the number of branch points
+        that are crossed when tracing the path back to the soma.
         :return:
             d: dict
             Dictionary of the form {u: branch_order} for each node.
@@ -639,15 +709,25 @@ class NeuronTree:
             d.update(self._get_branch_order(edges[0][1], bo))
         return d
 
-    def _get_distance(self, dist, as_dict=False):
+    def _get_distance(self, dist='path_from_soma', weight='euclidean_dist', as_dict=False):
+        """
+        Returns the distance
+        :param dist: String, defines the distance measure to be used (default is 'path_from_soma'), Options are
+        'path_from_soma' and 'branch_order'.
+        :param weight: String. Defines the edge attribute that is considered for the distance. Options are
+        ['euclidean_dist' = default, 'path_lenght']
+        :param as_dict: boolean, default = False. Determines whether the distance are returned as a dictionary of the
+        form {'node_id': ,distance} or as an numpy.array.
+        :return: Dictionary or numpy.array of the defined distance measure from each node to the soma.
+        """
         if dist == 'path_from_soma':
 
             if as_dict:
                 dist_ = nx.single_source_dijkstra_path_length(self.get_graph(), source=self.get_root(),
-                                                              weight='euclidean_dist')
+                                                              weight=weight)
             else:
                 dist_ = np.array(list(nx.single_source_dijkstra_path_length(self.get_graph(), source=self.get_root(),
-                                                                            weight='euclidean_dist').values()))
+                                                                            weight=weight).values()))
         elif dist == 'branch_order':
             dist_ = self._get_branch_order(1, 0)
             if not as_dict:
@@ -658,30 +738,31 @@ class NeuronTree:
 
         return dist_
 
-    def get_segment_length(self):
+    def get_segment_length(self, dist='path_length'):
         """
-        Returns the dictionary of the segment length in microns of each branch. The keys of the dictionary denote the tuples of the
-        starting and end node of each segment.
+        Returns the dictionary of the segment length in microns of each branch where dist denotes the distance measure.
+         Possible options are 'path_length' an 'euclidean_dist'. The keys of the dictionary denote the
+        tuples of the starting and end node of each segment.
+        :param dist: String, options ['path_length', 'euclidean_dist']
         :return:
             d: dict
-            Dictionary of the form {(n_s, n_e): segment length[u] }
+            Dictionary of the form {(n_s, n_e): segment length[u] in either 'path length' or 'euclidean distance' }
         """
 
-        G = copy.copy(self.get_graph())
-        T = NeuronTree(graph=G)
-        T.reduce()
+        T = self.get_mst()
 
-        dist = lambda x, y: np.sqrt(np.dot(x, x) - 2 * np.dot(x, y) + np.dot(y, y))
-
-        segment_length = {e: dist(G.node[e[0]]['pos'], G.node[e[1]]['pos']) for e in T.edges()}
+        segment_length = nx.get_edge_attributes(T.get_graph(), dist)
         return segment_length
 
     def get_kde_distribution(self, key, dist=None):
         """
-
-        :param key:
-        :param dist:
-        :return:
+        Returns a Gaussian kernel density estimate of the distribution of the measure defined by _key_.
+        :param key: String, measure to calculate the kernel density estimate from. Options are: 'thickness',
+        'path_angle', 'branch_angle', 'branch_order' and 'distance'.
+        :param dist: Optional. Allows to express the measure as a function of distance. If set to None, the kde is
+        one-dimensional, otherwise it is has two dimensions. Options for available distance measures,
+        see _get_distance().
+        :return: A one- or two-dimensional Gaussian kernel density estimate of measure _key_.
         """
 
         if key == 'thickness':
@@ -795,7 +876,14 @@ class NeuronTree:
             hist    1D or 2D histogram
             edges   bin edges used
         """
-        thickness = np.array(list(nx.get_node_attributes(self.get_graph(), 'radius').values()))
+
+        # get the thickness of each node
+        thickness_dict = nx.get_node_attributes(self.get_graph(), 'radius')
+
+        # delete the soma since it usually skews the distribution
+        thickness_dict.pop(self.get_root())
+
+        thickness = np.array(list(thickness_dict.values()))
 
         if dist_measure:
 
@@ -812,16 +900,18 @@ class NeuronTree:
         :return: dict of path angles btw two edges.
                 d[u][v][w] returns the angle between edge (u,v) and (v,w)
         """
+        # get the depth first search successors from the soma (id=1).
         successors = nx.dfs_successors(self.get_graph(), 1)
         path_angle = {}
-        for n1, n2 in self.edges():
-            u = self.get_graph().node[n2]['pos'] - self.get_graph().node[n1]['pos']
-            path_angle[n1] = {}
+
+        for u, v in self.edges():
+            e1 = self.get_graph().node[v]['pos'] - self.get_graph().node[u]['pos']
+            path_angle[u] = {}
             try:
-                path_angle[n1][n2] = {}
-                for succ in successors[n2]:
-                    v = self.get_graph().node[succ]['pos'] - self.get_graph().node[n2]['pos']
-                    path_angle[n1][n2][succ] = angle_between(u, v) * 180 / np.pi
+                path_angle[u][v] = {}
+                for w in successors[v]:
+                    e2 = self.get_graph().node[w]['pos'] - self.get_graph().node[v]['pos']
+                    path_angle[u][v][w] = angle_between(e1, e2) * 180 / np.pi
             except KeyError:
                 continue
 
@@ -888,7 +978,7 @@ class NeuronTree:
             Returns the distribution of the branch angles, so the angles that are made between two branching segments.
             The distribution is calculated against a distance measure, namely 'path_from_soma' or 'branch_order'.
             The branch angles are returned in degree.
-        :param dist_measure: string. default = 'path_from_soma'
+        :param dist_measure: string. default = None
             Defines the distance measure against whom the thickness is calculated. Possible choices are 'path_from_soma'
             or 'branch_order'.
         :param kwargs: dditional arguments to be passed to histogram calculation
@@ -907,11 +997,28 @@ class NeuronTree:
         else:
             return np.histogramdd(branch_angles, **kwargs)
 
-    def get_segment_length_dist(self, **kwargs):
+    def get_segment_length_dist(self, segment_dist='path_length', branch_order=False, **kwargs):
+        """
+        Returns the histogram over segment lengths within the neuron. A segment is the part of a neurite between two
+        branch points.
+        :param segment_dist:    String, default='path_length',
+                                option=['path_length', 'euclidean_dist'] determines if the segment length is measured as
+                                euclidean distance between the end points or as the segment's path length.
+        :param branch_order:   bool, default=False, Defines whether segment path length is calculated as a function of
+                                branch order.
+        :param kwargs: parameters that can be passed to numpy.histogram
+        :return:
+            hist    histogram over segment lengths
+            edges   bins used for the histogram _hist_
+        """
 
-        segment_length = list(self.get_segment_length().values())
-
-        return np.histogram(segment_length, **kwargs)
+        segment_length = self.get_segment_length(segment_dist)
+        if branch_order:
+            bo = self.get_branch_order()
+            data = np.array([[bo[item[0][1]], item[1]] for item in segment_length.items()])
+            return np.histogramdd(data, **kwargs)
+        else:
+            return np.histogram(list(segment_length.values()), **kwargs)
 
     def get_volume(self):
         """
@@ -944,6 +1051,19 @@ class NeuronTree:
         return d
 
     def get_sholl_intersection_profile(self, proj='xy', steps=36, centroid='centroid'):
+        """
+        Calculates the Sholl intersection profile of the neurons projection determined by the parameter _proj_. The
+        Sholl intersection profile counts the intersection of the neurites with concentric circles with increasing
+        radii. The origin of the concentric circles can be chosen to either be the centroid of the
+        projected neuron's convex hull or to be the soma.
+        :param proj: 2D projection of all neurites. Options are 'xy', 'xz' and 'yz'
+        :param steps: number of concentric circles centered around _centroid_. Their radii are determined as the
+        respective fraction of the distance from the centroid to the farthest point of the convex hull.
+        :param centroid: Determines the origin of the concentric circles. Options are 'centroid' or 'soma'.
+        :return:
+            intersections  list, len(steps), count of intersections with each circle.
+            intervals list, len(steps +1), radii of the concentric circles.
+        """
 
         G = self.get_graph()
         coordinates = []
@@ -964,20 +1084,22 @@ class NeuronTree:
             coordinates.append((p1[indx], p2[indx]))
 
         # remove illegal points
-        coords = [c for c in coordinates if (c[0][0] != c[1][0] and c[0][1] != c[1][1])]
+        coords = [c for c in coordinates if (c[0][0] != c[1][0] or c[0][1] != c[1][1])]
 
-        lines = MultiLineString(coords).buffer(0.001)
+        lines = MultiLineString(coords).buffer(0.0001)
         bounds = np.array(lines.bounds).reshape(2, 2).T
         if centroid == 'centroid':
             center = np.array(lines.convex_hull.centroid.coords[0])
             p_circle = Point(center)
         elif centroid == 'soma':
-            center = np.array((0, 0))
+            center = G.node[self.get_root()]['pos'][indx]
             p_circle = Point(center)
         else:
             raise ValueError("Centroid %s is not defined" % centroid)
 
-        r_max = max(np.linalg.norm(center - bounds[:, 0]), np.linalg.norm(center - bounds[:, 1]))
+        # get the maximal absolute coordinates in x and y
+        idx = np.argmax(np.abs(bounds), axis=1)
+        r_max = np.linalg.norm(center - bounds[idx, [0, 1]])
 
         intersections = []
         intervals = [0]
@@ -994,6 +1116,65 @@ class NeuronTree:
             intervals.append(r)
 
         return intersections, intervals
+
+    def get_psad(self):
+        """
+        Returns the proportional sum of absolute deviations (PSAD) for each branching node in the neuron. The PSAD is
+        a measure of topological tree asymmetry and is defined for a branching node p as
+        PSAD_p = m/(2*(m-1)*(n-m) * sum_m |r_i - n/m|
+        where m is the out_degree of node p, n is the number of leaves of the subtree starting at p and r_i is the
+        number of leaves of the i_th subtree of p. For a more detailed definition see:
+        Verwer, Ronald WH, and Jaap van Pelt.
+        "Descriptive and comparative analysis of geometrical properties of neuronal tree structures."
+        Journal of neuroscience methods 18.1-2 (1986): 179-206.
+
+        :return:
+            w:      dict boolean, dict of weights [0,1] indicating which subtrees have more than 3 leaves.
+            psad:   dict, dictionary of the form {bp: PSAD} for each  in neuron.
+
+        """
+
+        def get_no_of_leaves(G, start, out_degree):
+            """
+            Helper-function: Returns the number of leaves that are attached to start point in graph G.
+            downstream.
+            :param G: nx.Digraph
+            :param start: int   point to get the number of terminals from.
+            :param out_degree:  dict . Dictionary of out degrees for each node in G.
+            :return: int
+            """
+            t = 0
+            if out_degree[start] == 0:
+                t = 1
+            else:
+                for s in G.successors(start):
+                    t += get_no_of_leaves(G, s, out_degree)
+            return t
+
+        G = self.get_graph()
+
+        branchpoints = self.get_branchpoints()
+        nodes = self.nodes()
+        out_degree = nx.DiGraph.out_degree(G)
+
+        degree = dict(zip(nodes, [0] * len(nodes)))
+        for n in nodes:
+            degree[n] = get_no_of_leaves(G, n, out_degree)
+
+        psad = dict()
+        for bp in branchpoints:
+            m = out_degree[bp]
+            n = degree[bp]
+
+            PSAD = 0
+            if m < n:  # only calculate for asymmetric trees
+                for s in G.successors(bp):
+                    PSAD += np.abs(degree[s] - n / m)
+                PSAD = PSAD * m / (2 * (m - 1) * (n - m))
+            psad[bp] = PSAD
+
+        w = dict(zip(psad.keys(), [degree[n] > 3 for n in psad.keys()]))
+        return w, psad
 
     def get_persistence(self):
         """
@@ -1051,56 +1232,19 @@ class NeuronTree:
         D['death'].append(f(R))
         return pd.DataFrame(D)
 
-    def get_gillette_sequence(self, order='StL'):
-        MST = self.get_mst()
-        # first step: assign sequence type to each node and determine sub tree depth
-        sequence_types = dict()
-        subtree_length = dict()
-        G = MST.get_graph()
-        tips = MST.get_tips()
-
-        for n in MST.nodes():
-            S = nx.DiGraph.successors(G,n)
-
-            b = np.array([s in tips for s in S])
-            if b.all():
-                t='T'
-            elif b.any():
-                t='C'
-            else:
-                t='A'
-
-            sequence_types[n] = t
-            subtree_length[n] = len(nx.dfs_tree(G, n).nodes())
-
-        nx.set_node_attributes(G,name='s_type', values=sequence_types)
-        nx.set_node_attributes(G,name='subtree_length', values=subtree_length)
-
-        # traverse nodes in right order. Here: short then long
-        no_nodes = len(G.nodes())
-        S= [1]
-        k = -1
-        while len(S) != no_nodes:
-            s= S[k]
-            succ = [s_ for s_ in G.successors(s) if s_ not in S] # remove nodes that you have visited already    
-
-            if len(succ) == 0:
-                k -= 1
-            else:
-
-                idx = np.argsort([subtree_length[s_] for s_ in succ])
-                if order == 'LtS':
-                    #reverse since the longest get traversed first
-                    idx = idx[::-1]
-                S.append(np.array(succ)[idx][0])
-                k = -1
-        seq = ''.join([sequence_types[s] for s in S])
-        return seq
-
-    # re-sample new nodes along the tree in equidistant distance dist (given in microns)
-    # all original branching points are kept!
-    # returns the tuple Pos, PID, TYPE, RADIUS, DIST
     def _resample_tree_data(self, dist=1):
+        """
+        Re-sample new nodes along the tree in equidistant distance dist (given in microns) and calculates the respective
+        node and edge attributes to generate a new NeuronTree.
+        All original branching points are kept!
+        :param dist: distance (in microns) at which each neurite is resampled.
+        :return:
+            POS     list of positions
+            PID     list of parent ids
+            TYPE    list of types for each resampled node
+            RADIUS  list of radii for each resampled node
+            DIST
+        """
         P = []
         PID = []
         TYPE = []
@@ -1160,9 +1304,15 @@ class NeuronTree:
         return P, PID, TYPE, RADIUS, DIST
 
     def resample_tree(self, dist=1):
+        """
+         Re-sample new nodes along the tree in equidistant distance dist (given in microns) and return a new
+         NeuronTree with the resampled data. Original branch points are kept.
+        :param dist: distance (in microns) at which to resample
+        :return: NeuronTree
+        """
 
         (pos, pid, t, r, d) = self._resample_tree_data(dist)
-        n_attr = [dict(pos=pos[i], type=t[i], radius=t[i]) for i in range(len(d))]
+        n_attr = [dict(pos=pos[i], type=t[i], radius=r[i]) for i in range(len(d))]
 
         nodes = list(zip(range(1, len(pid) + 1), n_attr))
 
@@ -1207,6 +1357,11 @@ class NeuronTree:
 #######################################################################################################################
 
     def get_node_colors(self):
+        """
+        Returns a list of colors for each node as it appears in the graph. Used to give the 2D graph representation
+        node colors.
+        :return: list of color char tags for each node in graph. 'g' for axon, 'y' for dendrite and 'grey' for soma.
+        """
         axon_nodes = self.get_axon_nodes()
         dendrite_nodes = self.get_dendrite_nodes()
 
@@ -1220,7 +1375,17 @@ class NeuronTree:
                 colors.append('grey')
         return colors
 
-    def draw_3D(self, fig=None, ix=None, reverse=True, r_axis='z', axon_color='grey', dendrite_color='darkgrey'):
+    def draw_3D(self, fig=None, ix=111, reverse=True, r_axis='z', axon_color='grey', dendrite_color='darkgrey'):
+        """
+        Draws a stick figure neuron in 3D.
+        :param fig: figure in which to draw. If None a new figure is created.
+        :param ix: index of the subplot within the figure 'fig'. Default: 111
+        :param reverse: Default=True. Determines whether the axis specified in 'r_axis' is inverted.
+        :param r_axis: Default = 'z'. Defines the axis that is inverted if 'reverse' is set to True. Possible values are
+        'x', 'y' and 'z'.
+        :param axon_color: Color, default='grey'. Defines the color of the axon.
+        :param dendrite_color: Color, default='darkgrey'. Defines the color of the dendrites.
+        """
 
         nodes = [k for k in nx.get_node_attributes(self._G, 'pos').values()]
         nodes = np.array(nodes)
@@ -1230,7 +1395,6 @@ class NeuronTree:
         # plot G
         if not fig:
             fig = plt.figure()
-            ix = 111
         ax = fig.add_subplot(ix, projection='3d')
         ax.scatter(nodes[:, 0], nodes[:, 1], nodes[:, 2], c=t, marker='.')
         plt.hold
@@ -1238,12 +1402,11 @@ class NeuronTree:
         ax.scatter(root_pos[0], root_pos[1], root_pos[2], c='k', marker='^')
 
         colors = ['k', axon_color, dendrite_color]
-        V = np.zeros((len(self._G.edges()), 2, 3))
-        cs = []
+
         for k, e in enumerate(self._G.edges()):
             n1 = self._G.node[e[0]]
             n2 = self._G.node[e[1]]
-            v = np.array([n1['pos'],n2['pos']])
+            v = np.array([n1['pos'], n2['pos']])
 
             ax.plot3D(v[:, 0], v[:, 1], v[:, 2], c=colors[int(n2['type']) - 1])
 
@@ -1260,14 +1423,21 @@ class NeuronTree:
         ax.set_ylabel('Y [microns]')
         ax.set_zlabel('Z [microns]')
 
-    def draw_3D_volumetric(self, fig=None, ix=None, axon_color='grey', dendrite_color='darkgrey'):
-
+    def draw_3D_volumetric(self, fig=None, ix=111, axon_color='grey', dendrite_color='darkgrey'):
+        """
+        Draws a volumetric neuron in 3D.
+        :param fig: Figure in which to draw. If None a new figure is created.
+        :param ix: Index of the subplot within the figure 'fig'. Default: 111
+        :param axon_color: Color, default='grey'. Defines the color of the axon.
+        :param dendrite_color: Color, default='darkgrey'. Defines the color of the dendrites.
+        """
         from .utils import get_rotation_matrix
 
-        P = nx.get_node_attributes(self._G, 'pos')
-        Rad = nx.get_node_attributes(self._G, 'radius')
-        Type = nx.get_node_attributes(self._G, 'type')
+        P = nx.get_node_attributes(self._G, 'pos')          # get 3D position for each node
+        Rad = nx.get_node_attributes(self._G, 'radius')     # get radius for each node
+        Type = nx.get_node_attributes(self._G, 'type')      # get type for each node
 
+        # number of surfaces for each volume segment
         num = 5
 
         u = np.linspace(0, 2 * np.pi, num=num)
@@ -1278,20 +1448,22 @@ class NeuronTree:
         fy = lambda r: r * np.outer(np.sin(u), np.sin(v))
         fz = lambda r: r * np.outer(np.ones(np.size(u)), np.cos(v))
 
+        # Create a figure
         if not fig:
             fig = plt.figure()
-            ix = 111
 
+        # Add three dimensional axis
         ax = fig.add_subplot(ix, projection='3d')
 
         unit_z = np.array([0, 0, 1])
+        
         # plot the nodes as spheres
         for i in self.nodes():
             pos = P[i]
             r = Rad[i]
             if Type[i] == 2:
                 c = axon_color
-            elif Type[i] == 1:
+            elif Type[i] == 1:  # plot the soma black
                 c = 'k'
             else:
                 c = dendrite_color
@@ -1311,11 +1483,11 @@ class NeuronTree:
             else:
                 c = dendrite_color
 
-            h = self._G.edge[e[0]][e[1]]['euclidean_dist']
+            h = self._G.edge[e[0]][e[1]]['euclidean_dist'] # length of the edge
             # translation
             T = P[e[0]]
             # rotation
-            R = get_rotation_matrix(unit_z, P[e[1]] - P[e[0]])
+            R = get_rotation_matrix(unit_z, P[e[1]] - P[e[0]])  # rotate edge
 
             k = np.linspace(0, h, num)
             t = np.linspace(0, 2 * np.pi, num)
@@ -1335,6 +1507,11 @@ class NeuronTree:
         ax.set_zlabel('Z [microns]')
 
     def draw_tree(self, edge_labels=False, **kwds):
+        """
+        Draw neuron as a planar tree.
+        :param edge_labels: Boolean, default=False. Determines if edgelabels are drawn as well.
+        :param kwds: arguments that can be passed to the nx.draw_networkx function.
+        """
 
         pos = nx.drawing.nx_agraph.graphviz_layout(self._G, prog='dot')
 
@@ -1346,11 +1523,18 @@ class NeuronTree:
             edge_labels = {(n1, n2): self._G[n1][n2]['path_length'] for (n1, n2) in self._G.edges()}
             nx.draw_networkx_edge_labels(self._G, pos, edge_labels=edge_labels, **kwds)
 
-
-
-    def draw_2D(self, fig=None, projection='xz', axon_color='grey', dendrite_color='darkgrey', x_offset=0, y_offset=0,
-                **kwargs):
-
+    def draw_2D(self, fig=None, projection='xz', axon_color='grey', dendrite_color='darkgrey',
+                apical_dendrite_color='darkyellow', x_offset=0, y_offset=0, **kwargs):
+        """
+        Plots a 2D projection of the stick figure neuron.
+        :param fig: Figure in which to draw. If None a new figure is created.
+        :param projection: Default='xz'. Identifier of the ewo dimensional projection plane ['xz', 'xy', 'yz']
+        :param axon_color: Color, default='grey'. Defines the color of the axon.
+        :param dendrite_color: Color, default='darkgrey'. Defines the color of the dendrites.
+        :param x_offset: double, default = 0, define offset for the first projection coordinate.
+        :param y_offset: double, default = 0, define offset for the first projection coordinate.
+        :param kwargs: further plotting parameters that can be passed to the plt.plot function.
+        """
         if not fig:
             fig = plt.figure()
         if projection == 'xy':
@@ -1364,7 +1548,7 @@ class NeuronTree:
 
         G = self.get_graph()
         V = np.zeros((len(G.edges()), 2, 3))
-        colors = ['k', axon_color, dendrite_color]
+        colors = ['k', axon_color, dendrite_color, apical_dendrite_color]
 
         cs = []
         for k, e in enumerate(G.edges()):
@@ -1378,51 +1562,77 @@ class NeuronTree:
         x = indices[0]
         y = indices[1]
 
-        plt_idx = cs == axon_color
+        plt_idx = np.array([cs_i == axon_color for cs_i in cs])
         if len(plt_idx.shape) > 1:
             plt_idx = plt_idx[:, 0]
 
-        p = plt.plot(V[plt_idx, :, x].T + x_offset, V[plt_idx, :, y].T + y_offset, c=axon_color, **kwargs)
+        if plt_idx.any():
+            _ = fig.gca().plot(V[plt_idx, :, x].T + x_offset, V[plt_idx, :, y].T + y_offset, c=axon_color, **kwargs)
 
-        plt_idx = cs == dendrite_color
+        plt_idx = np.array([cs_i == dendrite_color for cs_i in cs])
         if len(plt_idx.shape) > 1:
             plt_idx = plt_idx[:, 0]
-        p = plt.plot(V[plt_idx, :, x].T + x_offset, V[plt_idx, :, y].T + y_offset, c=dendrite_color, **kwargs)
+
+        if plt_idx.any():
+            _ = fig.gca().plot(V[plt_idx, :, x].T + x_offset, V[plt_idx, :, y].T + y_offset, c=dendrite_color, **kwargs)
+
+        plt_idx = np.array([cs_i == apical_dendrite_color for cs_i in cs])
+        if len(plt_idx.shape) > 1:
+            plt_idx = plt_idx[:, 0]
+
+        if plt_idx.any():
+            _ = fig.gca().plot(V[plt_idx, :, x].T + x_offset, V[plt_idx, :, y].T + y_offset, c=apical_dendrite_color,
+                               **kwargs)
 
 
     ############# SAVING FUNCTIONS #####################
 
+
     def to_swc(self):
+        """
+        Write NeuronTree into swc file compatible pandas.DataFrame.
+        :return: pandas.DataFrame with columns 'n', 'type', 'x', 'y', 'z', 'radius' and 'parent'
+        """
+
         # create dataframe with graph data
         G = self._G
-        ids = G.nodes()
+        ids = [int(k) for k in G.nodes()]
         pos = np.round(np.array(list(nx.get_node_attributes(G, 'pos').values())), 2)
         r = np.array(list(nx.get_node_attributes(G, 'radius').values()))
         t = np.array(list(nx.get_node_attributes(G, 'type').values())).astype(int)
-        pids = [list(l.keys())[0] for l in list(G.pred.values()) if list(l.keys())]
+        pids = [int(list(l.keys())[0]) for l in list(G.pred.values()) if list(l.keys())]
         pids.insert(0, -1)
         # write graph into swc file
         d = {'n': ids, 'type': t, 'x': pos[:, 0], 'y': pos[:, 1], 'z': pos[:, 2], 'radius': r, 'parent': pids}
-        df = pd.DataFrame(data=d, columns=d.keys())
+        df = pd.DataFrame(data=d, columns=['n', 'type', 'x','y', 'z' ,'radius' , 'parent'])
 
         return df
 
     def write_to_swc(self, file_name,
-                     ext='',
                      path='/gpfs01/berens/data/data/anatomy/BC_morphologies/swc_tree/'):
+        """
+        Write NeuronTree to swc file.
+        :param file_name: String. File name without '.swc' tag.
+        :param path: String. Path to file
 
-        if not exists(path + ext):
-            makedirs(path + ext)
+        """
+
+        if not exists(path):
+            makedirs(path)
 
         df = self.to_swc()
-        df.to_csv(path + ext + file_name + '.swc', sep=' ', encoding='utf-8', header=False, index=False)
+        df.to_csv(path + file_name + '.swc', sep=' ', encoding='utf-8', header=False, index=False)
 
     def write_to_mat(self, file_name,
-                     ext='',
                      path='/gpfs01/berens/data/data/anatomy/BC_morphologies/csv_luxburg/'):
+        """
+        Write NeuronTree to mat file.
+        :param file_name: String. Filename without .mat tag.
+        :param path:  String. Path to file
+        """
 
-        if not exists(path + ext):
-            makedirs(path + ext)
+        if not exists(path):
+            makedirs(path)
 
         data = {}
         G = self._G
@@ -1433,4 +1643,4 @@ class NeuronTree:
         data['pos'] = P
         data['type'] = T
         data['A'] = A
-        savemat(path + ext + file_name, data)
+        savemat(path + file_name + '.mat', data)

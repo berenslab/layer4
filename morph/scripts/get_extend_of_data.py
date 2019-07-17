@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 
-DATASET_DESCRIPTION = "/mnt/remote_home/Projects/V1 Layer 4/data/dataset_description.csv"
+DATASET_DESCRIPTION = "./data/dataset_description.csv"
 
 dataset = pd.read_csv(DATASET_DESCRIPTION).rename(columns={'Unnamed: 0': 'cell_no'})
 
@@ -16,7 +16,7 @@ dendrite_min_extend = np.zeros((3,))
 
 for n, item in dataset.iterrows():
     # adjust file path here	
-    nt = pd.read_csv("/mnt/remote_home/Projects/V1 Layer 4/data/nt/%s_%s.swc" % (item['type'], item['swc'][:-4]),
+    nt = pd.read_csv("./data/nt/%s_%s.swc" % (item['type'], item['swc'][:-4]),
                      sep=" ", names=['n', 'type', 'x', 'y', 'z', 'radius', 'parent'])
     max_ = np.max(nt[['x', 'y', 'z']])
     min_ = np.min(nt[['x', 'y', 'z']])
@@ -51,4 +51,4 @@ extend = pd.DataFrame(data.T, index=['full_width', 'full_height', 'full_depth', 
                                      'axon_depth', 'dendrite_width', 'dendrite_height', 'dendrite_depth'],
                       columns=['min', 'max'])
 # adjust file path here
-extend.to_csv("/mnt/remote_home/Projects/V1 Layer 4/data/cell_extend.csv")
+extend.to_csv("./data/cell_extend.csv")

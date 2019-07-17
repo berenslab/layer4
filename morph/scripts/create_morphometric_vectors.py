@@ -12,10 +12,10 @@ from utils import NeuronTree as nt
 from queue import Queue
 from threading import Thread
 import networkx as nx
-import copy
 
-DATASET_DESCRIPTION = "../data/dataset_description.csv"
-INPUT_FOLDER = "../data/nt/"
+
+DATASET_DESCRIPTION = "./data/dataset_description.csv"
+INPUT_FOLDER = "./data/nt/"
 FAULTY_CELLS = []
 
 
@@ -80,6 +80,19 @@ def worker():
         z['max_branch_angle'] = np.max(branch_angles)
         z['min_branch_angle'] = np.min(branch_angles)
         z['mean_branch_angle'] = np.mean(branch_angles)
+        radii = nx.get_node_attributes(R.get_graph(), 'radius')
+        edges = R.edges()
+        r = R.get_root()
+
+        z['soma_radius'] = radii[int(r)]
+        # get thickness of initial segments
+        node_ids = [e[1] for e in edges if (e[0] == r)]
+        initial_segments_radius = [radii[int(n)] for n in node_ids]
+        z['mean_intial_segment_radius'] = np.mean(initial_segments_radius)
+
+        # get mean neurite thickness
+        radii.pop(r)  # remove the soma as it is usually the thickest
+        z['mean_neurite_radius'] = np.mean(list(radii.values()))
 
         result[file_path] = z # store it
 
@@ -88,7 +101,7 @@ if __name__ == "__main__":
 
     # parse arguments from command line
     parser = argparse.ArgumentParser("Create vector of morphometric statistics from neurons")
-    parser.add_argument("filename", default='',nargs='+', type=str, help="name of file. Is supposed to be in INPUT FOLDER")
+    parser.add_argument("-filename", default='', type=str, help="name of file. Is supposed to be in INPUT FOLDER")
     parser.add_argument("-part", default='axon', choices=['axon', 'dendrite', 'full'],
                         help="neuron part that is used for computation.")
 
@@ -96,7 +109,7 @@ if __name__ == "__main__":
 
     swcs = []
 
-    save_path = "../data/morphometrics/%s/" % args.part
+    save_path = "./data/morphometrics/%s/" % args.part
     if not os.path.exists(save_path):
         os.makedirs(save_path)
 
@@ -107,11 +120,11 @@ if __name__ == "__main__":
         morphometry_data = pd.DataFrame()
         existing_files = []
 
-    if args.filename:
-
+    if args.filename != '':
         inputs = args.filename
+        
     else:
-        inputs = INPUT_FOLDER + os.listdir(INPUT_FOLDER)
+        inputs = [INPUT_FOLDER + f for f in os.listdir(INPUT_FOLDER)]
 
     q = Queue()
     result = {}  # used to store the results

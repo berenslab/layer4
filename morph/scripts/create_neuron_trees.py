@@ -9,8 +9,8 @@ from utils_ import get_standardized_swc
 from multiprocessing import Pool
 
 
-PATH_TO_DATASET_DESCRIPTION = "/mnt/remote_home/Projects/publications/layer4/data/dataset_description.csv"
-SAVE_FOLDER = "/mnt/remote_home/Projects/publications/layer4/data/nt/"
+PATH_TO_DATASET_DESCRIPTION = "./data/dataset_description.csv"
+SAVE_FOLDER = "./data/nt/"
 
 
 def create_neuron_tree(input_file):
@@ -28,8 +28,9 @@ def create_neuron_tree(input_file):
     standardized_swc = get_standardized_swc(swc)
 
     N = nt.NeuronTree(swc=standardized_swc)
+    N = N.resample_tree(dist=1)
     N = N.smooth_neurites(dim=1, window_size=21)
-    N.write_to_swc(file_name=cell_type + "_" + file_name[:-4], ext="",
+    N.write_to_swc(file_name=cell_type + "_" + file_name[:-4],
                    path=SAVE_FOLDER)
 
 
