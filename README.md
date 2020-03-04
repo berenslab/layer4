@@ -1,8 +1,5 @@
 ![Layer 4 neurons](cover.png)
 
-# Neocortical layer 4 in adult mouse differs in major cell types and circuit organization between primary sensory areas
+# Layer 4 of mouse neocortex differs in cell types and circuit organization between sensory areas
 
-
-Analysis code for the L4 paper
-
-https://www.biorxiv.org/content/10.1101/507293v2
+Analysis code for the paper https://www.nature.com/articles/s41467-019-12058-z
